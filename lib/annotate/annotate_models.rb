@@ -199,7 +199,7 @@ module AnnotateModels
           col_type << "(#{col.precision}, #{col.scale})"
         elsif col.sql_type.start_with?('enum(')
           # Handle native MySQL enum columns
-          attrs << "(#{col.sql_type[5..-1]}"
+          attrs << "values: [#{col.sql_type[5..-2].split(',').collect {|x| ':' + x.gsub(/'/,'')}.join(', ')}]"
           col_type = 'enum'
         elsif col_type != "spatial"
           if (col.limit)
