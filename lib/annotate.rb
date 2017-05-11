@@ -6,9 +6,11 @@ require 'annotate/annotate_routes'
 begin
   # ActiveSupport 3.x...
   require 'active_support/hash_with_indifferent_access'
-rescue Exception => e
+  require 'active_support/core_ext/object/blank'
+rescue Exception
   # ActiveSupport 2.x...
   require 'active_support/core_ext/hash/indifferent_access'
+  require 'active_support/core_ext/blank'
 end
 
 module Annotate
@@ -18,19 +20,22 @@ module Annotate
   POSITION_OPTIONS=[
     :position_in_routes, :position_in_class, :position_in_test,
     :position_in_fixture, :position_in_factory, :position,
+    :position_in_serializer
   ]
   FLAG_OPTIONS=[
     :show_indexes, :simple_indexes, :include_version, :exclude_tests,
     :exclude_fixtures, :exclude_factories, :ignore_model_sub_dir,
     :format_bare, :format_rdoc, :format_markdown, :sort, :force, :trace,
+    :timestamp, :exclude_serializers, :classified_sort, :show_foreign_keys,
+    :exclude_scaffolds, :exclude_controllers, :exclude_helpers, :ignore_unknown_models,
   ]
   OTHER_OPTIONS=[
-    :model_dir,
+    :ignore_columns, :skip_on_db_migrate, :wrapper_open, :wrapper_close, :wrapper, :routes,
+    :hide_limit_column_types,
   ]
   PATH_OPTIONS=[
-    :require,
+    :require, :model_dir, :root_dir
   ]
-
 
   ##
   # Set default values that can be overridden via environment variables.
@@ -38,17 +43,20 @@ module Annotate
   def self.set_defaults(options = {})
     return if(@has_set_defaults)
     @has_set_defaults = true
+
     options = HashWithIndifferentAccess.new(options)
-    [POSITION_OPTIONS, FLAG_OPTIONS, PATH_OPTIONS].flatten.each do |key|
-      if(options.has_key?(key))
-        default_value = if(options[key].is_a?(Array))
+
+    [POSITION_OPTIONS, FLAG_OPTIONS, PATH_OPTIONS, OTHER_OPTIONS].flatten.each do |key|
+      if options.has_key?(key)
+        default_value = if options[key].is_a?(Array)
           options[key].join(",")
         else
           options[key]
         end
       end
-      default_value = ENV[key.to_s] if(!ENV[key.to_s].blank?)
-      ENV[key.to_s] = default_value.to_s
+
+      default_value = ENV[key.to_s] if !ENV[key.to_s].blank?
+      ENV[key.to_s] = default_value.nil? ? nil : default_value.to_s
     end
   end
 
@@ -67,15 +75,36 @@ module Annotate
       options[key] = (!ENV[key.to_s].blank?) ? ENV[key.to_s].split(',') : []
     end
 
-    if(!options[:model_dir])
-      options[:model_dir] = 'app/models'
+    if(options[:model_dir].empty?)
+      options[:model_dir] = ['app/models']
     end
+
+    if(options[:root_dir].empty?)
+      options[:root_dir] = ['']
+    end
+
+    options[:wrapper_open] ||= options[:wrapper]
+    options[:wrapper_close] ||= options[:wrapper]
 
     return options
   end
 
+  def self.reset_options
+    [POSITION_OPTIONS, FLAG_OPTIONS, PATH_OPTIONS, OTHER_OPTIONS].flatten.each do |key|
+      ENV[key.to_s] = nil
+    end
+  end
+
   def self.skip_on_migration?
     ENV['skip_on_db_migrate'] =~ TRUE_RE
+  end
+
+  def self.include_routes?
+    ENV['routes'] =~ TRUE_RE
+  end
+
+  def self.include_models?
+    true
   end
 
   def self.loaded_tasks=(val); @loaded_tasks = val; end
@@ -109,8 +138,10 @@ module Annotate
         klass.eager_load!
       end
     else
-      FileList["#{options[:model_dir]}/**/*.rb"].each do |fname|
-        require File.expand_path(fname)
+      options[:model_dir].each do |dir|
+        FileList["#{dir}/**/*.rb"].each do |fname|
+          require File.expand_path(fname)
+        end
       end
     end
   end
@@ -118,7 +149,7 @@ module Annotate
   def self.bootstrap_rake
     begin
       require 'rake/dsl_definition'
-    rescue Exception => e
+    rescue Exception
       # We might just be on an old version of Rake...
     end
     require 'rake'

@@ -2,18 +2,40 @@
 require File.dirname(__FILE__) + '/../spec_helper.rb'
 require 'annotate/annotate_models'
 require 'annotate/active_record_patch'
+require 'active_support/core_ext/string'
 
 describe AnnotateModels do
-  def mock_class(table_name, primary_key, columns)
+  def mock_foreign_key(name, from_column, to_table, to_column = 'id')
+    double("ForeignKeyDefinition",
+      :name         => name,
+      :column       => from_column,
+      :to_table     => to_table,
+      :primary_key  => to_column,
+    )
+  end
+
+  def mock_connection(indexes = [], foreign_keys = [])
+    double("Conn",
+      :indexes      => indexes,
+      :foreign_keys => foreign_keys,
+      :supports_foreign_keys? => true,
+    )
+  end
+
+  def mock_class(table_name, primary_key, columns, foreign_keys = [])
     options = {
-      :connection   => mock("Conn", :indexes => []),
-      :table_name   => table_name,
-      :primary_key  => primary_key && primary_key.to_s,
-      :column_names => columns.map { |col| col.name.to_s },
-      :columns      => columns
+      :connection       => mock_connection([], foreign_keys),
+      :table_exists?    => true,
+      :table_name       => table_name,
+      :primary_key      => primary_key,
+      :column_names     => columns.map { |col| col.name.to_s },
+      :columns          => columns,
+      :column_defaults  => Hash[columns.map { |col|
+        [col.name, col.default]
+      }]
     }
 
-    mock("An ActiveRecord class", options)
+    double("An ActiveRecord class", options)
   end
 
   def mock_column(name, type, options={})
@@ -27,31 +49,34 @@ describe AnnotateModels do
     stubs.merge!(options)
     stubs.merge!(:name => name, :type => type)
 
-    mock("Column", stubs)
+    double("Column", stubs)
   end
 
-  it { AnnotateModels.quote(nil).should eql("NULL") }
-  it { AnnotateModels.quote(true).should eql("TRUE") }
-  it { AnnotateModels.quote(false).should eql("FALSE") }
-  it { AnnotateModels.quote(25).should eql("25") }
-  it { AnnotateModels.quote(25.6).should eql("25.6") }
-  it { AnnotateModels.quote(1e-20).should eql("1.0e-20") }
+  it { expect(AnnotateModels.quote(nil)).to eql("NULL") }
+  it { expect(AnnotateModels.quote(true)).to eql("TRUE") }
+  it { expect(AnnotateModels.quote(false)).to eql("FALSE") }
+  it { expect(AnnotateModels.quote(25)).to eql("25") }
+  it { expect(AnnotateModels.quote(25.6)).to eql("25.6") }
+  it { expect(AnnotateModels.quote(1e-20)).to eql("1.0e-20") }
+  it { expect(AnnotateModels.quote(BigDecimal.new("1.2"))).to eql("1.2") }
+  it { expect(AnnotateModels.quote([BigDecimal.new("1.2")])).to eql(["1.2"]) }
 
-  it "should get schema info" do
+  it "should get schema info with default options" do
     klass = mock_class(:users, :id, [
-                                     mock_column(:id, :integer),
-                                     mock_column(:name, :string, :limit => 50)
+                                     mock_column(:id, :integer,  :limit => 8),
+                                     mock_column(:name, :string, :limit => 50),
+                                     mock_column(:notes, :text,  :limit => 55),
                                     ])
 
-    AnnotateModels.get_schema_info(klass, "Schema Info").should eql(<<-EOS)
+    expect(AnnotateModels.get_schema_info(klass, "Schema Info")).to eql(<<-EOS)
 # Schema Info
 #
 # Table name: users
 #
-#  id   :integer          not null, primary key
-#  name :string(50)       not null
+#  id    :integer          not null, primary key
+#  name  :string(50)       not null
+#  notes :text(55)         not null
 #
-
 EOS
   end
 
@@ -61,7 +86,7 @@ EOS
                                      mock_column(:name, :string, :limit => 50)
                                     ])
 
-    AnnotateModels.get_schema_info(klass, "Schema Info").should eql(<<-EOS)
+    expect(AnnotateModels.get_schema_info(klass, "Schema Info")).to eql(<<-EOS)
 # Schema Info
 #
 # Table name: users
@@ -69,7 +94,86 @@ EOS
 #  id   :integer          not null
 #  name :string(50)       not null
 #
+EOS
+  end
 
+  it "should get schema info even if the primary key is array, if using composite_primary_keys" do
+    klass = mock_class(:users, [:a_id, :b_id], [
+                                     mock_column(:a_id, :integer),
+                                     mock_column(:b_id, :integer),
+                                     mock_column(:name, :string, :limit => 50)
+                                    ])
+
+    expect(AnnotateModels.get_schema_info(klass, "Schema Info")).to eql(<<-EOS)
+# Schema Info
+#
+# Table name: users
+#
+#  a_id :integer          not null, primary key
+#  b_id :integer          not null, primary key
+#  name :string(50)       not null
+#
+EOS
+  end
+  it "should get schema info with enum type " do
+    klass = mock_class(:users, nil, [
+                                     mock_column(:id, :integer),
+                                     mock_column(:name, :enum, :limit => [:enum1, :enum2])
+                                    ])
+
+    expect(AnnotateModels.get_schema_info(klass, "Schema Info")).to eql(<<-EOS)
+# Schema Info
+#
+# Table name: users
+#
+#  id   :integer          not null
+#  name :enum             not null, (enum1, enum2)
+#
+EOS
+  end
+
+  it "should get schema info for integer and boolean with default" do
+           klass = mock_class(:users, :id, [
+              mock_column(:id, :integer),
+              mock_column(:size, :integer, :default => 20),
+              mock_column(:flag, :boolean, :default => false)
+            ])
+            expect(AnnotateModels.get_schema_info(klass, "Schema Info")).to eql(<<-EOS)
+# Schema Info
+#
+# Table name: users
+#
+#  id   :integer          not null, primary key
+#  size :integer          default(20), not null
+#  flag :boolean          default(FALSE), not null
+#
+EOS
+  end
+
+  it "should get foreign key info" do
+           klass = mock_class(:users, :id, [
+              mock_column(:id, :integer),
+              mock_column(:foreign_thing_id, :integer),
+            ],
+            [
+              mock_foreign_key(
+                'fk_rails_02e851e3b7',
+                'foreign_thing_id',
+                'foreign_things'
+              )
+            ])
+            expect(AnnotateModels.get_schema_info(klass, "Schema Info", :show_foreign_keys => true)).to eql(<<-EOS)
+# Schema Info
+#
+# Table name: users
+#
+#  id               :integer          not null, primary key
+#  foreign_thing_id :integer          not null
+#
+# Foreign Keys
+#
+#  fk_rails_02e851e3b7  (foreign_thing_id => foreign_things.id)
+#
 EOS
   end
 
@@ -78,7 +182,7 @@ EOS
                                      mock_column(:id, :integer),
                                      mock_column(:name, :string, :limit => 50)
                                     ])
-    AnnotateModels.get_schema_info(klass, AnnotateModels::PREFIX, :format_rdoc => true).should eql(<<-EOS)
+    expect(AnnotateModels.get_schema_info(klass, AnnotateModels::PREFIX, :format_rdoc => true)).to eql(<<-EOS)
 # #{AnnotateModels::PREFIX}
 #
 # Table name: users
@@ -88,8 +192,62 @@ EOS
 #--
 # #{AnnotateModels::END_MARK}
 #++
-
 EOS
+  end
+
+  describe "#get_schema_info with custom options" do
+    def self.when_called_with(options = {})
+      expected = options.delete(:returns)
+
+      it "should work with options = #{options}" do
+        klass = mock_class(:users, :id, [
+                                       mock_column(:id,     :integer, :limit => 8),
+                                       mock_column(:active, :boolean, :limit => 1),
+                                       mock_column(:name,   :string,  :limit => 50),
+                                       mock_column(:notes,  :text,    :limit => 55),
+                                      ])
+        schema_info = AnnotateModels.get_schema_info(klass, "Schema Info", options)
+        expect(schema_info).to eql(expected)
+      end
+    end
+
+    when_called_with hide_limit_column_types: '', returns: <<-EOS.strip_heredoc
+      # Schema Info
+      #
+      # Table name: users
+      #
+      #  id     :integer          not null, primary key
+      #  active :boolean          not null
+      #  name   :string(50)       not null
+      #  notes  :text(55)         not null
+      #
+    EOS
+
+    when_called_with hide_limit_column_types: 'integer,boolean', returns:
+      <<-EOS.strip_heredoc
+      # Schema Info
+      #
+      # Table name: users
+      #
+      #  id     :integer          not null, primary key
+      #  active :boolean          not null
+      #  name   :string(50)       not null
+      #  notes  :text(55)         not null
+      #
+    EOS
+    
+    when_called_with hide_limit_column_types: 'integer,boolean,string,text', returns:
+      <<-EOS.strip_heredoc
+      # Schema Info
+      #
+      # Table name: users
+      #
+      #  id     :integer          not null, primary key
+      #  active :boolean          not null
+      #  name   :string           not null
+      #  notes  :text             not null
+      #
+    EOS
   end
 
   describe "#get_model_class" do
@@ -104,9 +262,8 @@ EOS
 
     # todo: use 'files' gem instead
     def create(file, body="hi")
-      file_path = File.join(AnnotateModels.model_dir, file)
+      file_path = File.join(AnnotateModels.model_dir[0], file)
       FileUtils.mkdir_p(File.dirname(file_path))
-
       File.open(file_path, "wb") do |f|
         f.puts(body)
       end
@@ -114,10 +271,10 @@ EOS
     end
 
     def check_class_name(file, class_name)
-      klass = AnnotateModels.get_model_class(file)
+      klass = AnnotateModels.get_model_class(File.join(AnnotateModels.model_dir[0], file))
 
-      klass.should_not == nil
-      klass.name.should == class_name
+      expect(klass).not_to eq(nil)
+      expect(klass.name).to eq(class_name)
     end
 
     before :each do
@@ -150,6 +307,38 @@ EOS
       check_class_name 'bar/foo_inside_bar.rb', 'Bar::FooInsideBar'
     end
 
+    it "should find AR model when duplicated by a nested model" do
+      create 'foo.rb', <<-EOS
+        class Foo < ActiveRecord::Base
+        end
+      EOS
+
+      create 'bar/foo.rb', <<-EOS
+        class Bar::Foo
+        end
+      EOS
+      check_class_name 'bar/foo.rb', 'Bar::Foo'
+      check_class_name 'foo.rb', 'Foo'
+    end
+
+    it "should find AR model nested inside a class" do
+      create 'voucher.rb', <<-EOS
+        class Voucher < ActiveRecord::Base
+        end
+      EOS
+
+      create 'voucher/foo.rb', <<-EOS
+        class Voucher
+          class Foo
+          end
+        end
+      EOS
+
+      check_class_name 'voucher.rb', 'Voucher'
+      check_class_name 'voucher/foo.rb', 'Voucher::Foo'
+    end
+
+
     it "should not care about unknown macros" do
       create 'foo_with_macro.rb', <<-EOS
         class FooWithMacro < ActiveRecord::Base
@@ -158,7 +347,7 @@ EOS
       EOS
       check_class_name 'foo_with_macro.rb', 'FooWithMacro'
     end
-    
+
     it "should not care about known macros" do
       create('foo_with_known_macro.rb', <<-EOS)
         class FooWithKnownMacro < ActiveRecord::Base
@@ -219,9 +408,24 @@ EOS
           has_many :yah
         end
       EOS
-      capturing(:stderr) do
+      expect(capturing(:stderr) do
         check_class_name 'foo_with_known_macro.rb', 'FooWithKnownMacro'
-      end.should == ""
+      end).to eq("")
+    end
+
+    it "should not require model files twice" do
+      create 'loaded_class.rb', <<-EOS
+        class LoadedClass < ActiveRecord::Base
+          CONSTANT = 1
+        end
+      EOS
+      path = File.expand_path('loaded_class', AnnotateModels.model_dir[0])
+      Kernel.load "#{path}.rb"
+      expect(Kernel).not_to receive(:require).with(path)
+
+      expect(capturing(:stderr) {
+        check_class_name 'loaded_class.rb', 'LoadedClass'
+      }).not_to include("warning: already initialized constant LoadedClass::CONSTANT")
     end
   end
 
@@ -261,7 +465,7 @@ end
 
       AnnotateModels.remove_annotation_of_file(path)
 
-      content(path).should == <<-EOS
+      expect(content(path)).to eq <<-EOS
 class Foo < ActiveRecord::Base
 end
       EOS
@@ -285,13 +489,42 @@ end
 
       AnnotateModels.remove_annotation_of_file(path)
 
-      content(path).should == <<-EOS
+      expect(content(path)).to eq <<-EOS
 class Foo < ActiveRecord::Base
 end
       EOS
     end
   end
 
+  describe '#resolve_filename' do
+
+    it 'should return the test path for a model' do
+      filename_template = 'test/unit/%MODEL_NAME%_test.rb'
+      model_name        = 'example_model'
+      table_name        = 'example_models'
+
+      filename = AnnotateModels.resolve_filename(filename_template, model_name, table_name)
+      expect(filename). to eq 'test/unit/example_model_test.rb'
+    end
+
+    it 'should return the fixture path for a model' do
+      filename_template = 'test/fixtures/%TABLE_NAME%.yml'
+      model_name        = 'example_model'
+      table_name        = 'example_models'
+
+      filename = AnnotateModels.resolve_filename(filename_template, model_name, table_name)
+      expect(filename). to eq 'test/fixtures/example_models.yml'
+    end
+
+    it 'should return the fixture path for a nested model' do
+      filename_template = 'test/fixtures/%PLURALIZED_MODEL_NAME%.yml'
+      model_name        = 'parent/child'
+      table_name        = 'parent_children'
+
+      filename = AnnotateModels.resolve_filename(filename_template, model_name, table_name)
+      expect(filename). to eq 'test/fixtures/parent/children.yml'
+    end
+  end
   describe "annotating a file" do
     before do
       @model_dir = Dir.mktmpdir('annotate_models')
@@ -305,6 +538,7 @@ end
                                         mock_column(:name, :string, :limit => 50)
                                        ])
       @schema_info = AnnotateModels.get_schema_info(@klass, "== Schema Info")
+      Annotate.reset_options
     end
 
     def write_model file_name, file_content
@@ -326,31 +560,119 @@ end
       Annotate::PATH_OPTIONS.each { |key| ENV[key.to_s] = '' }
     end
 
-    it "should annotate the file before the model if position == 'before'" do
+    def magic_comments_list_each
+      [
+        '# encoding: UTF-8',
+        '# coding: UTF-8',
+        '# -*- coding: UTF-8 -*-',
+        '#encoding: utf-8',
+        '# encoding: utf-8',
+        '# -*- encoding : utf-8 -*-',
+        "# encoding: utf-8\n# frozen_string_literal: true",
+        "# frozen_string_literal: true\n# encoding: utf-8",
+        '# frozen_string_literal: true',
+        '#frozen_string_literal: false',
+        '# -*- frozen_string_literal : true -*-',
+      ].each{|magic_comment| yield magic_comment }
+    end
+
+    it "should put annotation before class if :position == 'before'" do
       annotate_one_file :position => "before"
-      File.read(@model_file_name).should == "#{@schema_info}#{@file_content}"
+      expect(File.read(@model_file_name)).to eq("#{@schema_info}\n#{@file_content}")
     end
 
-    it "should annotate before if given :position => :before" do
+    it "should put annotation before class if :position => :before" do
       annotate_one_file :position => :before
-      File.read(@model_file_name).should == "#{@schema_info}#{@file_content}"
+      expect(File.read(@model_file_name)).to eq("#{@schema_info}\n#{@file_content}")
     end
 
-    it "should annotate after if given :position => :after" do
+    it "should put annotation before class if :position == 'top'" do
+      annotate_one_file :position => "top"
+      expect(File.read(@model_file_name)).to eq("#{@schema_info}\n#{@file_content}")
+    end
+
+    it "should put annotation before class if :position => :top" do
+      annotate_one_file :position => :top
+      expect(File.read(@model_file_name)).to eq("#{@schema_info}\n#{@file_content}")
+    end
+
+    it "should put annotation after class if :position => 'after'" do
+      annotate_one_file :position => 'after'
+      expect(File.read(@model_file_name)).to eq("#{@file_content}\n#{@schema_info}")
+    end
+
+    it "should put annotation after class if :position => :after" do
       annotate_one_file :position => :after
-      File.read(@model_file_name).should == "#{@file_content}\n#{@schema_info}"
+      expect(File.read(@model_file_name)).to eq("#{@file_content}\n#{@schema_info}")
     end
 
-    it "should update annotate position" do
-      annotate_one_file :position => :before
+    it "should put annotation after class if :position => 'bottom'" do
+      annotate_one_file :position => 'bottom'
+      expect(File.read(@model_file_name)).to eq("#{@file_content}\n#{@schema_info}")
+    end
 
-      another_schema_info = AnnotateModels.get_schema_info(mock_class(:users, :id, [mock_column(:id, :integer),]),
+    it "should put annotation after class if :position => :bottom" do
+      annotate_one_file :position => :bottom
+      expect(File.read(@model_file_name)).to eq("#{@file_content}\n#{@schema_info}")
+    end
+
+    it 'should wrap annotation if wrapper is specified' do
+      annotate_one_file :wrapper_open => 'START', :wrapper_close => 'END'
+      expect(File.read(@model_file_name)).to eq("# START\n#{@schema_info}# END\n\n#{@file_content}")
+    end
+
+    describe "with existing annotation => :before" do
+      before do
+        annotate_one_file :position => :before
+        another_schema_info = AnnotateModels.get_schema_info(mock_class(:users, :id, [mock_column(:id, :integer),]),
                                                            "== Schema Info")
+        @schema_info = another_schema_info
+      end
 
-      @schema_info = another_schema_info
-      annotate_one_file :position => :after
+      it "should retain current position" do
+        annotate_one_file
+        expect(File.read(@model_file_name)).to eq("#{@schema_info}\n#{@file_content}")
+      end
 
-      File.read(@model_file_name).should == "#{@file_content}\n#{another_schema_info}"
+      it "should retain current position even when :position is changed to :after" do
+        annotate_one_file :position => :after
+        expect(File.read(@model_file_name)).to eq("#{@schema_info}\n#{@file_content}")
+      end
+
+      it "should change position to :after when :force => true" do
+        annotate_one_file :position => :after, :force => true
+        expect(File.read(@model_file_name)).to eq("#{@file_content}\n#{@schema_info}")
+      end
+    end
+
+    describe "with existing annotation => :after" do
+      before do
+        annotate_one_file :position => :after
+        another_schema_info = AnnotateModels.get_schema_info(mock_class(:users, :id, [mock_column(:id, :integer),]),
+                                                           "== Schema Info")
+        @schema_info = another_schema_info
+      end
+
+      it "should retain current position" do
+        annotate_one_file
+        expect(File.read(@model_file_name)).to eq("#{@file_content}\n#{@schema_info}")
+      end
+
+      it "should retain current position even when :position is changed to :before" do
+        annotate_one_file :position => :before
+        expect(File.read(@model_file_name)).to eq("#{@file_content}\n#{@schema_info}")
+      end
+
+      it "should change position to :before when :force => true" do
+        annotate_one_file :position => :before, :force => true
+        expect(File.read(@model_file_name)).to eq("#{@schema_info}\n#{@file_content}")
+      end
+    end
+
+    it 'should skip columns with option[:ignore_columns] set' do
+      output = AnnotateModels.get_schema_info(@klass, "== Schema Info",
+                                              :ignore_columns => '(id|updated_at|created_at)')
+      expect(output.match(/id/)).to be_nil
     end
 
     it "works with namespaced models (i.e. models inside modules/subdirectories)" do
@@ -365,11 +687,32 @@ end
                                        ])
       schema_info = AnnotateModels.get_schema_info(klass, "== Schema Info")
       AnnotateModels.annotate_one_file(model_file_name, schema_info, :position => :before)
-      File.read(model_file_name).should == "#{schema_info}#{file_content}"
+      expect(File.read(model_file_name)).to eq("#{schema_info}\n#{file_content}")
+    end
+
+    it "should not touch magic comments" do
+      magic_comments_list_each do |magic_comment|
+        write_model "user.rb", <<-EOS
+#{magic_comment}
+class User < ActiveRecord::Base
+end
+        EOS
+
+        annotate_one_file :position => :before
+
+        lines= magic_comment.split("\n")
+        File.open @model_file_name do |file|
+          lines.count.times do |index|
+            expect(file.readline).to eq "#{lines[index]}\n"
+          end
+        end
+      end
     end
 
     describe "if a file can't be annotated" do
        before do
+         allow(AnnotateModels).to receive(:get_loaded_model).with('user').and_return(nil)
+
          write_model('user.rb', <<-EOS)
            class User < ActiveRecord::Base
              raise "oops"
@@ -378,26 +721,28 @@ end
        end
 
        it "displays an error message" do
-         capturing(:stdout) {
+         expect(capturing(:stdout) {
            AnnotateModels.do_annotations :model_dir => @model_dir, :is_rake => true
-         }.should include("Unable to annotate user.rb: oops")
+         }).to include("Unable to annotate #{@model_dir}/user.rb: oops")
        end
 
        it "displays the full stack trace with --trace" do
-         capturing(:stdout) {
+         expect(capturing(:stdout) {
            AnnotateModels.do_annotations :model_dir => @model_dir, :trace => true, :is_rake => true
-         }.should include("/spec/annotate/annotate_models_spec.rb:")
+         }).to include("/spec/annotate/annotate_models_spec.rb:")
        end
 
        it "omits the full stack trace without --trace" do
-         capturing(:stdout) {
+         expect(capturing(:stdout) {
            AnnotateModels.do_annotations :model_dir => @model_dir, :trace => false, :is_rake => true
-         }.should_not include("/spec/annotate/annotate_models_spec.rb:")
+         }).not_to include("/spec/annotate/annotate_models_spec.rb:")
        end
     end
 
     describe "if a file can't be deannotated" do
        before do
+         allow(AnnotateModels).to receive(:get_loaded_model).with('user').and_return(nil)
+
          write_model('user.rb', <<-EOS)
            class User < ActiveRecord::Base
              raise "oops"
@@ -406,22 +751,38 @@ end
        end
 
        it "displays an error message" do
-         capturing(:stdout) {
+         expect(capturing(:stdout) {
            AnnotateModels.remove_annotations :model_dir => @model_dir, :is_rake => true
-         }.should include("Unable to deannotate user.rb: oops")
+         }).to include("Unable to deannotate #{@model_dir}/user.rb: oops")
        end
 
        it "displays the full stack trace" do
-         capturing(:stdout) {
+         expect(capturing(:stdout) {
            AnnotateModels.remove_annotations :model_dir => @model_dir, :trace => true, :is_rake => true
-         }.should include("/user.rb:2:in `<class:User>'")
+         }).to include("/user.rb:2:in `<class:User>'")
        end
 
        it "omits the full stack trace without --trace" do
-         capturing(:stdout) {
+         expect(capturing(:stdout) {
            AnnotateModels.remove_annotations :model_dir => @model_dir, :trace => false, :is_rake => true
-         }.should_not include("/user.rb:2:in `<class:User>'")
+         }).not_to include("/user.rb:2:in `<class:User>'")
        end
+    end
+  end
+
+  describe '.annotate_model_file' do
+    before do
+      class Foo < ActiveRecord::Base; end;
+      allow(AnnotateModels).to receive(:get_model_class).with('foo.rb') { Foo }
+      allow(Foo).to receive(:table_exists?) { false }
+    end
+
+    after { Object.send :remove_const, 'Foo' }
+
+    it 'skips attempt to annotate if no table exists for model' do
+      annotate_model_file = AnnotateModels.annotate_model_file([], 'foo.rb', nil, nil)
+
+      expect(annotate_model_file).to eq nil
     end
   end
 end

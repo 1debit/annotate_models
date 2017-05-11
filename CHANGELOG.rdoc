@@ -1,3 +1,46 @@
+== 2.7.0
+See https://github.com/ctran/annotate_models/releases/tag/v2.7.0
+
+== 2.6.9
+* Support foreigh key (#241)
+* Check if model has skip tag in annotate_model_file (#167)
+* Fix issue where serializer-related flags weren't being honored (#246)
+* Prefer SQL column type over normalized AR type (#231)
+
+== 2.6.8
+* Nothing annotated unless options[:model_dir] is specified, #234
+
+== 2.6.7
+* Nothing annotated unless options[:model_dir] is specified, #234
+
+== 2.6.6
+* Makes it possible to wrap annotations, #225
+* Fix single model generation, #214
+* Fix default value for Rails 4.2, #212
+* Don't crash on inherited models in subdirectories, #232
+* Process model_dir in rake task, #197
+
+== 2.6.4
+* Skip "models/concerns", #194
+* Fix #173 where annotate says "Nothing to annotate" in rails 4.2
+* Display an error message if not run from the root of the project, #186
+* Support rails 4.0 new default test directory, #182
+* Add an option to show timestamp in routes "-timestamp", #136
+* Skip plain ruby objects if they have the same class name as an ActiveRecord object, #121
+
+== 2.6.3
+* Fix bug of annotate position in routes (#158)
+
+== 2.6.2
+* Retain the current annotate block unless --force is specified
+* Always load models, since they may not be autoloaded by Rails
+* The pg array type is now detected (see #158)
+
+== 2.6.0.beta2
+
+* support for composite_primary_keys (garysweaver)
+* bug fix for annotate_one_file (vlado)
+
 == 2.6.0.beta1
 
 * It's now possible to use Annotate in standalone ActiveRecord (non-Rails)

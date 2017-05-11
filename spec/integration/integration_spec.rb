@@ -16,6 +16,7 @@ ENV['rvm_pretty_print_flag'] = '0'
 ENV['BUNDLE_GEMFILE'] = './Gemfile'
 
 describe "annotate inside Rails, using #{CURRENT_RUBY}" do
+  
   here = File.expand_path('..', __FILE__)
   chosen_scenario = nil
   if(!ENV['SCENARIO'].blank?)
@@ -26,17 +27,19 @@ describe "annotate inside Rails, using #{CURRENT_RUBY}" do
     next if(chosen_scenario && chosen_scenario != test_rig)
     it "works under #{test_name}" do
       if(!USING_RVM)
-        pending "Must have RVM installed."
+        skip "Must have RVM installed."
         next
       end
 
       # Don't proceed if the working copy is dirty!
-      Annotate::Integration.is_clean?(test_rig).should == true
+      expect(Annotate::Integration.is_clean?(test_rig)).to eq(true)
+
+      skip "temporarily ignored until Travis can run them"
 
       Bundler.with_clean_env do
         dir base_dir do
           temp_dir = Dir.pwd
-          File.basename(temp_dir).should == base_dir
+          expect(File.basename(temp_dir)).to eq(base_dir)
 
           # Delete cruft from hands-on debugging...
           Annotate::Integration.nuke_cruft(test_rig)
